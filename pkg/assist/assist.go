@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -246,17 +247,22 @@ func StartInteractivePrompt(containerID string, hostPort string, orchestrator sc
 
 		// If a scenario was detected, show scenario details
 		if response.ScenarioName != nil && *response.ScenarioName != "" {
-			var matchedScenario *ScenarioMatch
-			if len(response.Scenarios) > 0 {
-				matchedScenario = &response.Scenarios[0]
+			selectedScenarioName, matchedScenario, err := selectAssistScenario(response)
+			if err != nil {
+				fmt.Printf("⚠️  scenario selection cancelled: %v\n", err)
+				continue
 			}
-			if matchedScenario != nil && matchedScenario.Name != "" && matchedScenario.Name != *response.ScenarioName {
+			if selectedScenarioName == "" {
+				continue
+			}
+
+			if matchedScenario != nil && matchedScenario.Name != "" && matchedScenario.Name != selectedScenarioName {
 				printAssistScenarioDocumentation(*matchedScenario)
 			}
 
-			fmt.Printf("\n📋 fetching runnable details for scenario: %s\n", *response.ScenarioName)
+			fmt.Printf("\n📋 fetching runnable details for scenario: %s\n", selectedScenarioName)
 
-			scenarioDetail, err := scenarioProvider.GetScenarioDetail(*response.ScenarioName, nil)
+			scenarioDetail, err := scenarioProvider.GetScenarioDetail(selectedScenarioName, nil)
 			if err != nil {
 				fmt.Printf("⚠️  could not fetch scenario details: %v\n", err)
 			} else if scenarioDetail != nil {
@@ -273,7 +279,7 @@ func StartInteractivePrompt(containerID string, hostPort string, orchestrator sc
 					// User confirmed, get global environment and show the form
 					fmt.Printf("\n🔧 configuring scenario parameters...\n")
 
-					globalDetail, err := scenarioProvider.GetGlobalEnvironment(nil, *response.ScenarioName)
+					globalDetail, err := scenarioProvider.GetGlobalEnvironment(nil, selectedScenarioName)
 					if err != nil {
 						fmt.Printf("❌ error getting global environment: %v\n", err)
 						continue
@@ -304,7 +310,7 @@ func StartInteractivePrompt(containerID string, hostPort string, orchestrator sc
 					formResult.PrintSummary(allFields)
 
 					// Execute the scenario with form data
-					err = executeScenario(*response.ScenarioName, scenarioDetail, formResult, orchestrator, ctx, config, scenarioProvider)
+					err = executeScenario(selectedScenarioName, scenarioDetail, formResult, orchestrator, ctx, config, scenarioProvider)
 					if err != nil {
 						fmt.Printf("❌ error executing scenario: %v\n", err)
 					}
@@ -328,6 +334,111 @@ func StartInteractivePrompt(containerID string, hostPort string, orchestrator sc
 	}
 
 	return nil
+}
+
+type assistScenarioOption struct {
+	label        string
+	runnableName string
+	match        *ScenarioMatch
+}
+
+func (option assistScenarioOption) String() string {
+	return option.label
+}
+
+func selectAssistScenario(response *QueryResponse) (string, *ScenarioMatch, error) {
+	options := assistScenarioOptions(response)
+	if len(options) == 0 {
+		return "", nil, nil
+	}
+	if len(options) == 1 {
+		return options[0].runnableName, options[0].match, nil
+	}
+
+	fmt.Println("\nSuggested scenarios:")
+	for index, option := range options {
+		fmt.Printf("  %d. %s\n", index+1, option.label)
+	}
+
+	prompt := promptui.Prompt{
+		Label:   fmt.Sprintf("Select scenario to inspect [1-%d]", len(options)),
+		Default: "1",
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil
+			}
+			selected, err := strconv.Atoi(input)
+			if err != nil || selected < 1 || selected > len(options) {
+				return fmt.Errorf("enter a number from 1 to %d", len(options))
+			}
+			return nil
+		},
+	}
+
+	selected, err := prompt.Run()
+	if err != nil {
+		return "", nil, err
+	}
+	selected = strings.TrimSpace(selected)
+	if selected == "" {
+		selected = "1"
+	}
+	index, err := strconv.Atoi(selected)
+	if err != nil {
+		return "", nil, err
+	}
+	option := options[index-1]
+	return option.runnableName, option.match, nil
+}
+
+func assistScenarioOptions(response *QueryResponse) []assistScenarioOption {
+	if response == nil || response.ScenarioName == nil || *response.ScenarioName == "" {
+		return nil
+	}
+
+	options := make([]assistScenarioOption, 0, len(response.Scenarios)+1)
+	for index := range response.Scenarios {
+		match := &response.Scenarios[index]
+		runnableName := scenarioRunnableName(*match)
+		if runnableName == "" {
+			continue
+		}
+		options = append(options, assistScenarioOption{
+			label:        scenarioOptionLabel(*match, runnableName),
+			runnableName: runnableName,
+			match:        match,
+		})
+	}
+
+	if len(options) == 0 {
+		options = append(options, assistScenarioOption{
+			label:        *response.ScenarioName,
+			runnableName: *response.ScenarioName,
+		})
+	}
+
+	return options
+}
+
+func scenarioRunnableName(match ScenarioMatch) string {
+	if strings.TrimSpace(match.RunnableName) != "" {
+		return strings.TrimSpace(match.RunnableName)
+	}
+	return strings.TrimSpace(match.Name)
+}
+
+func scenarioOptionLabel(match ScenarioMatch, runnableName string) string {
+	sourceName := strings.TrimSpace(match.Name)
+	title := strings.TrimSpace(match.Title)
+
+	label := runnableName
+	if sourceName != "" && sourceName != runnableName {
+		label = fmt.Sprintf("%s (runs %s)", sourceName, runnableName)
+	}
+	if title != "" && title != sourceName && title != runnableName {
+		label = fmt.Sprintf("%s - %s", label, title)
+	}
+	return label
 }
 
 // printAssistScenarioDocumentation shows source documentation from the assist index when

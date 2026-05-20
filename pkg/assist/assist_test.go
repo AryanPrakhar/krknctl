@@ -407,3 +407,44 @@ func TestRAGDeploymentResult_Fields(t *testing.T) {
 		t.Errorf("Expected HostPort '9090', got '%s'", result.HostPort)
 	}
 }
+
+func TestAssistScenarioOptionsUsesRunnableNames(t *testing.T) {
+	scenarioName := "node-network-filter"
+	response := &QueryResponse{
+		ScenarioName: &scenarioName,
+		Scenarios: []ScenarioMatch{
+			{Name: "node-network-filter", Title: "Node Network Filter"},
+			{Name: "efs-disruption", RunnableName: "node-network-filter", Title: "EFS Disruption"},
+		},
+	}
+
+	options := assistScenarioOptions(response)
+	if len(options) != 2 {
+		t.Fatalf("expected 2 options, got %d", len(options))
+	}
+	if options[0].runnableName != "node-network-filter" {
+		t.Fatalf("expected first runnable node-network-filter, got %q", options[0].runnableName)
+	}
+	if options[1].runnableName != "node-network-filter" {
+		t.Fatalf("expected mapped runnable node-network-filter, got %q", options[1].runnableName)
+	}
+	if options[1].label != "efs-disruption (runs node-network-filter) - EFS Disruption" {
+		t.Fatalf("unexpected mapped label %q", options[1].label)
+	}
+}
+
+func TestAssistScenarioOptionsFallsBackToScenarioName(t *testing.T) {
+	scenarioName := "pod-scenarios"
+	response := &QueryResponse{ScenarioName: &scenarioName}
+
+	options := assistScenarioOptions(response)
+	if len(options) != 1 {
+		t.Fatalf("expected 1 fallback option, got %d", len(options))
+	}
+	if options[0].runnableName != scenarioName {
+		t.Fatalf("expected fallback runnable %q, got %q", scenarioName, options[0].runnableName)
+	}
+	if options[0].match != nil {
+		t.Fatal("fallback option should not have a scenario match")
+	}
+}
